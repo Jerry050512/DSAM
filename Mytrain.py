@@ -20,11 +20,11 @@ np.random.seed(2024)
 
 # --- Configuration ---
 # Paths
-DATA_ROOT = './datasets/NEU-RSDDS-AUG/'
+DATA_ROOT = '../datasets/NEU-RSDDS-AUG/'
 TRAIN_IMG_DIR = os.path.join(DATA_ROOT, 'Image_train')
 TRAIN_DEPTH_DIR = os.path.join(DATA_ROOT, 'Depth_train')
 TRAIN_GT_DIR = os.path.join(DATA_ROOT, 'GT_train')
-OUTPUT_DIR = './hy-tmp/output/'
+OUTPUT_DIR = '/hy-tmp/output/'
 LOG_FILE = os.path.join(OUTPUT_DIR, 'result.log')
 CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, 'checkpoint.pth')
 LOSS_PLOT_PATH = os.path.join(OUTPUT_DIR, 'train_loss.png')
