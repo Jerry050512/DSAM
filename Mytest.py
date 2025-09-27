@@ -11,10 +11,10 @@ import skimage.io as io
 
 # --- Configuration ---
 # Paths
-DATA_ROOT = './datasets/NEU-RSDDS-AUG/'
+DATA_ROOT = '../datasets/NEU-RSDDS-AUG/'
 TEST_IMG_DIR = os.path.join(DATA_ROOT, 'Image_test')
 TEST_DEPTH_DIR = os.path.join(DATA_ROOT, 'Depth_test')
-OUTPUT_DIR = './hy-tmp/output/'
+OUTPUT_DIR = '/hy-tmp/output/'
 PREDICTION_DIR = os.path.join(OUTPUT_DIR, 'predictions/')
 LOG_FILE = os.path.join(OUTPUT_DIR, 'result.log')
 CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, 'checkpoint.pth')
