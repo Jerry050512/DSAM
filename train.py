@@ -14,6 +14,8 @@ from segment_anything.modeling.CWDLoss import CriterionCWD
 from PIL import Image
 import skimage.io as io
 
+from torchvision import transforms
+
 # set seeds
 torch.manual_seed(2024)
 np.random.seed(2024)
@@ -52,14 +54,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Dataset Definition ---
 class NEUDataset(Dataset):
-    def __init__(self, image_dir, depth_dir, gt_dir, transform=None):
+    def __init__(self, image_dir, depth_dir, gt_dir, transform_size=(256, 256)):
         self.image_dir = image_dir
         self.depth_dir = depth_dir
         self.gt_dir = gt_dir
-        self.transform = transform
         self.image_files = sorted([f for f in os.listdir(image_dir) if f.endswith('.bmp')])
+        self.transform_size = transform_size
+
+        # 用于统一 resize
+        self.resize_img = transforms.Resize(transform_size, interpolation=Image.BILINEAR)
+        self.resize_mask = transforms.Resize(transform_size, interpolation=Image.NEAREST)
 
     def __len__(self):
         return len(self.image_files)
@@ -73,41 +78,52 @@ class NEUDataset(Dataset):
         depth_path = os.path.join(self.depth_dir, base_name + '.tiff')
         gt_path = os.path.join(self.gt_dir, base_name + '.png')
 
-        # Load data
-        image = np.array(Image.open(img_path).convert('RGB'))
-        depth_16bit = io.imread(depth_path)
-        gt2D = np.array(Image.open(gt_path).convert('L'))
+        # --- Load 原图 ---
+        image = Image.open(img_path).convert('RGB')
+        orig_size = image.size  # (W, H)，用于测试恢复
 
-        # Normalize depth data from 16-bit to 8-bit for model input
+        # --- Load depth ---
+        depth_16bit = io.imread(depth_path)
         if depth_16bit.dtype == np.uint16:
             depth_normalized = (depth_16bit / 65535.0 * 255.0).astype(np.uint8)
         else:
-            # If not 16-bit, assume it's already in a compatible format (e.g., uint8)
             depth_normalized = depth_16bit.astype(np.uint8)
+        depth_img = Image.fromarray(depth_normalized)
 
+        # --- Load GT ---
+        gt2D = Image.open(gt_path).convert('L')
+        gt2D = np.array(gt2D)
         if gt2D.max() > 0:
             gt2D = (gt2D / gt2D.max() * 255).astype(np.uint8)
+        gt2D = Image.fromarray(gt2D > 0)
 
-        gt2D = (gt2D > 0).astype(np.uint8)
+        # --- Resize 统一大小 ---
+        image_resized = self.resize_img(image)
+        depth_resized = self.resize_img(depth_img)
+        gt_resized = self.resize_mask(gt2D)
 
-        # Generate bounding box from GT mask
-        y_indices, x_indices = np.where(gt2D > 0)
+        # --- 转 tensor ---
+        image_tensor = transforms.ToTensor()(image_resized)           # (3,H,W)
+        depth_tensor = transforms.ToTensor()(depth_resized)           # (1,H,W)
+        gt_tensor = torch.from_numpy(np.array(gt_resized)).unsqueeze(0).float()  # (1,H,W)
+
+        # --- 生成 bbox (用 resize 后的 GT) ---
+        y_indices, x_indices = torch.where(gt_tensor[0] > 0)
         if len(y_indices) > 0:
-            x_min, x_max = np.min(x_indices), np.max(x_indices)
-            y_min, y_max = np.min(y_indices), np.max(y_indices)
-            # Add perturbation
-            H, W = gt2D.shape
+            x_min, x_max = torch.min(x_indices).item(), torch.max(x_indices).item()
+            y_min, y_max = torch.min(y_indices).item(), torch.max(y_indices).item()
+            H, W = gt_tensor.shape[1:]
             x_min = max(0, x_min - np.random.randint(0, 20))
             x_max = min(W, x_max + np.random.randint(0, 20))
             y_min = max(0, y_min - np.random.randint(0, 20))
             y_max = min(H, y_max + np.random.randint(0, 20))
-            bbox = np.array([x_min, y_min, x_max, y_max])
+            bbox = torch.tensor([x_min, y_min, x_max, y_max]).float()
         else:
-            # Fallback for empty masks: use the whole image
-            H, W = gt2D.shape
-            bbox = np.array([0, 0, W, H])
+            H, W = gt_tensor.shape[1:]
+            bbox = torch.tensor([0, 0, W, H]).float()
 
-        return image, depth_normalized, gt2D[None, :, :], torch.tensor(bbox).float()
+        return image_tensor, depth_tensor, gt_tensor, bbox, orig_size
+
 
 # --- Main Training Script ---
 def main():
@@ -136,7 +152,7 @@ def main():
         epoch_loss = 0
         pbar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")
 
-        for step, (images, depths, gt2Ds, boxes) in enumerate(pbar):
+        for step, (images, depths, gt2Ds, boxes, orig_size) in enumerate(pbar):
 
             with torch.no_grad():
                 # Preprocess images and depths for the encoder
@@ -144,17 +160,15 @@ def main():
                 input_depths = []
                 for i in range(images.shape[0]):
                     # Preprocess RGB image
-                    img_np = images[i].numpy().astype(np.uint8)
+                    img_np = images[i].permute(1, 2, 0).numpy().astype(np.uint8)
+                    
                     resized_img = sam_trans.apply_image(img_np)
                     resized_img_tensor = torch.as_tensor(resized_img.transpose(2, 0, 1)).to(DEVICE)
                     input_images.append(sam_model.preprocess(resized_img_tensor))
 
                     # Preprocess depth map (convert to 3-channel)
-                    depth_np = depths[i].numpy()
-                    if depth_np.ndim == 2:
-                        depth_np_3c = np.repeat(depth_np[:, :, np.newaxis], 3, axis=2)
-                    else:
-                        depth_np_3c = depth_np
+                    depth_np = depths[i].squeeze().numpy()  # (H, W)
+                    depth_np_3c = np.repeat(depth_np[:, :, None], 3, axis=2).astype(np.uint8)  # (H, W, 3)
                     resized_depth = sam_trans.apply_image(depth_np_3c)
                     resized_depth_tensor = torch.as_tensor(resized_depth.transpose(2, 0, 1)).to(DEVICE)
                     input_depths.append(sam_model.preprocess(resized_depth_tensor))
