@@ -1,6 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import logging
+import sys
+import cv2
+from PIL import Image
+
 join = os.path.join
 from tqdm import tqdm
 import torch
@@ -12,148 +17,220 @@ from segment_anything.utils.transforms import ResizeLongestSide
 from segment_anything.modeling.CWDLoss import CriterionCWD
 from torch.nn import functional as F
 from torchvision.models.mobilenetv2 import InvertedResidual
+from dataset import NEUDataset
+
 # set seeds
 torch.manual_seed(2024)
 np.random.seed(2024)
 
+def setup_logging(log_path):
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s - %(levelname)s - %(message)s',
+                        handlers=[
+                            logging.FileHandler(log_path, mode='a'),
+                            logging.StreamHandler(sys.stdout)
+                        ])
+
 def _upsample_like_1024(src):
-    src = F.interpolate(src, size=(1024, 1024), mode='bilinear')
+    src = F.interpolate(src, size=(1024, 1024), mode='bilinear', align_corners=False)
     return src
 
+# prepare environment
+output_dir = '/hy-tmp/output'
+log_file = os.path.join(output_dir, 'result.log')
+setup_logging(log_file)
+logging.info("Starting new training session.")
 
-class NpzDataset(Dataset):
-    def __init__(self, data_root):
-        self.data_root = data_root
-        self.npz_files = sorted(os.listdir(self.data_root))
-        self.npz_data = [np.load(join(data_root, f)) for f in self.npz_files]
-        # this implementation is ugly but it works (and is also fast for feeding data to GPU)
-        # if your server has enough RAM
-        # as an alternative, you can also use a list of npy files and load them one by one
-        self.ori_gts = np.vstack([d['gts'] for d in self.npz_data])
-        self.ori_imgs = np.vstack([d['imgs'] for d in self.npz_data])
-        self.img_embeddings = np.vstack([d['img_embeddings'] for d in self.npz_data])
-        self.boundary = np.vstack([d['boundary'] for d in self.npz_data])
-        self.depth_embeddings = np.vstack([d['depth_embeddings'] for d in self.npz_data])
-        print(f"img_embeddings.shape={self.img_embeddings.shape}, ori_gts.shape={self.ori_gts.shape}, "
-              f"boundary.shape={self.boundary.shape}", f"depth_embeddings.shape={self.depth_embeddings.shape}")
 
-    def __len__(self):
-        return self.ori_gts.shape[0]
-
-    def __getitem__(self, index):
-        img_embed = self.img_embeddings[index]
-        gt2D = self.ori_gts[index]
-        img = self.ori_imgs[index]
-        boundary = self.boundary[index]
-        depth_embed = self.depth_embeddings[index]
-        y_indices, x_indices = np.where(gt2D > 0)
-        x_min, x_max = np.min(x_indices), np.max(x_indices)
-        y_min, y_max = np.min(y_indices), np.max(y_indices)
-        # add perturbation to bounding box coordinates
-        H, W = gt2D.shape
-        x_min = max(0, x_min - np.random.randint(0, 20))
-        x_max = min(W, x_max + np.random.randint(0, 20))
-        y_min = max(0, y_min - np.random.randint(0, 20))
-        y_max = min(H, y_max + np.random.randint(0, 20))
-        bboxes = np.array([x_min, y_min, x_max, y_max])
-        # convert img embedding, mask, bounding box to torch tensor
-        return torch.tensor(img_embed).float(), torch.tensor(img).float(), torch.tensor(gt2D[None, :, :]).long(), torch.tensor(bboxes).float(),\
-               torch.tensor(boundary[None, :, :]).long(), torch.tensor(depth_embed).float()
-
-    # %% test dataset class and dataloader
-npz_tr_path = 'data/vit_b/COD_train'
-work_dir = './work_dir_cod'
-task_name = 'DSAM'
-# prepare SAM model
-model_type = 'vit_b'
-checkpoint = 'work_dir_cod/SAM/sam_vit_b_01ec64.pth'
+# paths and parameters
 device = 'cuda:0'
-model_save_path = join(work_dir, task_name)
-os.makedirs(model_save_path, exist_ok=True)
-sam_model = sam_model_registry[model_type](checkpoint=checkpoint).to(device)
+dataset_path = '../datasets/NEU-RSDDS-AUG'
+model_type = 'vit_b'
+# The user should download the pre-trained weights to this path
+pretrained_checkpoint = 'work_dir_cod/SAM/sam_vit_b_01ec64.pth'
+model_save_path = os.path.join(output_dir, 'checkpoint.pth')
+os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+
+# Load SAM model
+try:
+    sam_model = sam_model_registry[model_type](checkpoint=pretrained_checkpoint).to(device)
+    logging.info(f"Loaded pre-trained SAM model from {pretrained_checkpoint}")
+except FileNotFoundError:
+    logging.warning(f"Pre-trained checkpoint not found at {pretrained_checkpoint}.")
+    logging.warning("Please download it from https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth and place it in the 'work_dir_cod/SAM/' directory.")
+    logging.warning("Initializing model with random weights.")
+    sam_model = sam_model_registry[model_type](checkpoint=None).to(device)
+
 
 sam_model.train()
-# Set up the optimizer, hyperparameter tuning will improve performance here
-optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-5, weight_decay=0)
+
+# Setup optimizer
+try:
+    trainable_params = list(sam_model.mask_decoder.parameters()) + \
+                       list(sam_model.pvt.parameters()) + \
+                       list(sam_model.BC.parameters()) + \
+                       list(sam_model.DWT.parameters()) + \
+                       list(sam_model.ME.parameters())
+    optimizer = torch.optim.Adam(trainable_params, lr=1e-5, weight_decay=0)
+    logging.info("Optimizer created with parameters from mask_decoder, pvt, BC, DWT, and ME.")
+except AttributeError as e:
+    logging.warning(f"Could not add all module parameters to optimizer: {e}. Falling back to optimizing mask_decoder only.")
+    optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-5, weight_decay=0)
+
 seg_loss = monai.losses.DiceCELoss(sigmoid=True, squared_pred=True, reduction='mean')
 CWD_loss = CriterionCWD(norm_type='channel', divergence='kl', temperature=4.0)
 
 num_epochs = 100
 losses = []
-best_loss = 1e10
-train_dataset = NpzDataset(npz_tr_path)
-mask_threshold = 0.0
-train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-for epoch in range(num_epochs+1):
+batch_size = 1
+
+# Create dataset and dataloader
+try:
+    train_dataset = NEUDataset(root_dir=dataset_path, mode='train')
+except FileNotFoundError:
+    logging.error(f"Dataset not found at {dataset_path}. Please check the path.")
+    sys.exit(1)
+
+
+def collate_fn(batch):
+    images, depths, gts, boxes, names, orig_sizes = [], [], [], [], [], []
+    sam_trans = ResizeLongestSide(sam_model.image_encoder.img_size)
+
+    for item in batch:
+        # Original size
+        img = item['image']
+        H, W, _ = img.shape
+        orig_sizes.append((H, W))
+
+        # Image
+        resize_img = sam_trans.apply_image(img)
+        resize_img_tensor = torch.as_tensor(resize_img.transpose(2, 0, 1)).float()
+        input_image = sam_model.preprocess(resize_img_tensor)
+        images.append(input_image)
+
+        # Depth
+        depth = item['depth']
+        if depth.ndim == 2: # Convert grayscale to 3-channel
+            depth = np.stack((depth,)*3, axis=-1)
+        resize_depth = sam_trans.apply_image(depth)
+        resize_depth_tensor = torch.as_tensor(resize_depth.transpose(2, 0, 1)).float()
+        input_depth = sam_model.preprocess(resize_depth_tensor)
+        depths.append(input_depth)
+
+        # Ground Truth
+        gt = item['gt']
+        gts.append(torch.tensor(gt[None, :, :]).long())
+
+        # Bounding box from GT
+        y_indices, x_indices = np.where(gt > 0)
+        if len(y_indices) > 0:
+            x_min, x_max = np.min(x_indices), np.max(x_indices)
+            y_min, y_max = np.min(y_indices), np.max(y_indices)
+            # add perturbation
+            x_min = max(0, x_min - np.random.randint(0, 20))
+            x_max = min(W, x_max + np.random.randint(0, 20))
+            y_min = max(0, y_min - np.random.randint(0, 20))
+            y_max = min(H, y_max + np.random.randint(0, 20))
+            bbox = np.array([x_min, y_min, x_max, y_max])
+        else: # If mask is empty, use a dummy box of the whole image
+            bbox = np.array([0, 0, W, H])
+
+        box = sam_trans.apply_boxes(bbox, (H, W))
+        boxes.append(torch.as_tensor(box, dtype=torch.float))
+
+        names.append(item['name'])
+
+    return {
+        'image': torch.stack(images),
+        'depth': torch.stack(depths),
+        'gt': torch.stack(gts),
+        'box': torch.stack(boxes),
+        'name': names,
+        'original_size': orig_sizes
+    }
+
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0)
+
+
+for epoch in range(num_epochs):
     epoch_loss = 0
-    # train
-    for step, (image_embedding, img, gt2D, boxes, boundary, depth_embedding) in enumerate(tqdm(train_dataloader)):
+
+    for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch}/{num_epochs-1}")):
+        # Move data to device
+        images = batch['image'].to(device)
+        depths = batch['depth'].to(device)
+        gt2D = batch['gt'].to(device)
+        box_torch = batch['box'].to(device)
 
         with torch.no_grad():
-            box_np = boxes.numpy()
-            sam_trans = ResizeLongestSide(sam_model.image_encoder.img_size)
-            box = sam_trans.apply_boxes(box_np, (gt2D.shape[-2], gt2D.shape[-1]))
-            box_torch = torch.as_tensor(box, dtype=torch.float, device=device)
-            boundary = torch.as_tensor(boundary, dtype=torch.float, device=device)
-            # boundary = boun_conv(boundary)
-            image_embedding = torch.as_tensor(image_embedding, dtype=torch.float, device=device)
-            depth_embedding = torch.as_tensor(depth_embedding, dtype=torch.float, device=device)
             if len(box_torch.shape) == 2:
-                box_torch = box_torch[:, None, :]  # (B, 1, 4)
-            # get prompt embeddings
-            sparse_embeddings_box, dense_embeddings_box = sam_model.prompt_encoder(
+                box_torch = box_torch[:, None, :]
+
+            image_embedding = sam_model.image_encoder(images)
+            depth_embedding = sam_model.image_encoder(depths)
+
+            sparse_embeddings, dense_embeddings_box = sam_model.prompt_encoder(
                 points=None,
                 boxes=box_torch,
-                masks=None
+                masks=None,
             )
 
-            resize_img_tensor = np.transpose(img, (0, 3, 1, 2)).to(device)
-            input_image = _upsample_like_1024(resize_img_tensor)
-            pvt_embedding = sam_model.pvt(input_image)[3]
+        # These modules are part of the training process
+        input_image_1024 = F.interpolate(images, size=(1024, 1024), mode='bilinear', align_corners=False)
+        pvt_embedding = sam_model.pvt(input_image_1024)[3]
 
         bc_embedding, pvt_64 = sam_model.BC(pvt_embedding)
-        # bc_embedding shape:" 1, 256, 64, 64
         distill_loss = CWD_loss(bc_embedding, depth_embedding)
+
         hybrid_embedding = torch.cat([pvt_64, bc_embedding], dim=1)
         high_frequency = sam_model.DWT(hybrid_embedding)
 
         dense_embeddings, sparse_embeddings = sam_model.ME(dense_embeddings_box,
-                                                           high_frequency, sparse_embeddings_box)
+                                                           high_frequency, sparse_embeddings)
 
-        # predicted masks
+        # Predicted masks
         mask_predictions, _ = sam_model.mask_decoder(
-            image_embeddings=image_embedding.to(device),  # (B, 256, 64, 64)
-            image_pe=sam_model.prompt_encoder.get_dense_pe(),  # (1, 256, 64, 64)
-            sparse_prompt_embeddings=sparse_embeddings,  # (B, 2, 256)
-            dense_prompt_embeddings=dense_embeddings,  # (B, 256, 64, 64)
+            image_embeddings=image_embedding,
+            image_pe=sam_model.prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
             multimask_output=False,
         )
 
         final_mask = sam_model.loop_finer(mask_predictions, depth_embedding, depth_embedding)
+        mask_predictions = 0.1 * final_mask + 0.9 * mask_predictions
 
-        mask_predictions = 0.1*final_mask + 0.9*mask_predictions
+        loss = 0.9 * seg_loss(mask_predictions, gt2D.float()) + 0.1 * distill_loss
 
-        loss = 0.9*seg_loss(mask_predictions, gt2D.to(device)) + 0.1*distill_loss
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         epoch_loss += loss.item()
 
-    epoch_loss /= step
+    if len(train_dataloader) > 0:
+      epoch_loss /= len(train_dataloader)
+
     losses.append(epoch_loss)
-    print(f'EPOCH: {epoch}, Loss: {epoch_loss}')
-    # save the latest model checkpoint
+    logging.info(f'EPOCH: {epoch}, Loss: {epoch_loss}')
+
+    # Save the model checkpoint, overwriting the previous one
     if epoch >= 80 and epoch % 10 == 0:
-        torch.save(sam_model.state_dict(), join(model_save_path, str(epoch) + 'sam_model.pth'))
-    # save the best model
-    if epoch_loss < best_loss:
-        best_loss = epoch_loss
-        torch.save(sam_model.state_dict(), join(model_save_path, 'sam_model_best.pth'))
+        torch.save(sam_model.state_dict(), model_save_path)
+        logging.info(f"Model checkpoint saved to {model_save_path} at epoch {epoch}")
+
+# Save final model
+torch.save(sam_model.state_dict(), model_save_path)
+logging.info(f"Final model saved to {model_save_path}")
+
 # plot loss
+plt.figure()
 plt.plot(losses)
 plt.title('Dice + Cross Entropy Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
-# plt.show() # comment this line if you are running on a server
-plt.savefig(join(model_save_path, 'train_loss.png'))
+plt.savefig(os.path.join(output_dir, 'train_loss.png'))
 plt.close()
+
+logging.info("Training finished.")
