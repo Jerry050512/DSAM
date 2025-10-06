@@ -67,8 +67,9 @@ with torch.no_grad():
         depth_embedding = sam_model.image_encoder(depth)
 
         # Use a full-image bounding box as the prompt
-        box = torch.tensor([[0, 0, original_w, original_h]], device=device)
-        box_torch = sam_trans.apply_boxes_torch(box, (original_h, original_w))
+        box = torch.tensor([[0, 0, 1024, 1024]], device=device)
+        box_torch = box
+        # box_torch = sam_trans.apply_boxes_torch(box, (original_h, original_w))
 
         sparse_embeddings, dense_embeddings_box = sam_model.prompt_encoder(
             points=None, boxes=box_torch, masks=None

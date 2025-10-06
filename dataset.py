@@ -60,6 +60,7 @@ class CustomDataset(Dataset):
                 gt = self.transform(gt)
             else:
                 gt = torch.zeros((1, 1024, 1024), dtype=torch.float32)
+            gt = (gt > 0).float()
             return image, depth, gt
         else:
             return image, depth, img_name, original_size
