@@ -80,16 +80,22 @@ def test_collate_fn(batch):
         resize_img = sam_trans.apply_image(img)
         input_sizes.append(resize_img.shape[:2])
         resize_img_tensor = torch.as_tensor(resize_img.transpose(2, 0, 1)).float()
-        input_image = sam_model.preprocess(resize_img_tensor)
+        input_image = sam_model.preprocess(resize_img_tensor.to(device))
         images.append(input_image)
 
         # Depth
         depth = item['depth']
-        if depth.ndim == 2:
-            depth = np.stack((depth,) * 3, axis=-1)
+        # 确保深度图像为支持的数据类型
+        if depth.dtype not in [np.uint8, np.float32]:
+            if depth.dtype == np.uint16:
+                depth = depth.astype(np.float32) / 65535.0
+            else:
+                depth = depth.astype(np.float32)
+        if depth.ndim == 2: # Convert grayscale to 3-channel
+            depth = np.stack((depth,)*3, axis=-1)
         resize_depth = sam_trans.apply_image(depth)
         resize_depth_tensor = torch.as_tensor(resize_depth.transpose(2, 0, 1)).float()
-        input_depth = sam_model.preprocess(resize_depth_tensor)
+        input_depth = sam_model.preprocess(resize_depth_tensor.to(device))
         depths.append(input_depth)
 
     return {
@@ -147,6 +153,7 @@ with torch.no_grad():
         mask_predictions = 0.1 * final_mask + 0.9 * mask_predictions
 
         # Post-process and save masks
+        mask_predictions = 1 - mask_predictions
         upscaled_masks = sam_model.postprocess_masks(mask_predictions, input_sizes[0], orig_sizes[0]).squeeze()
         binary_mask = (torch.sigmoid(upscaled_masks) > 0.5).cpu().numpy().astype(np.uint8)
         final_mask_image = binary_mask * 255

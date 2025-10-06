@@ -83,7 +83,7 @@ CWD_loss = CriterionCWD(norm_type='channel', divergence='kl', temperature=4.0)
 
 num_epochs = 100
 losses = []
-batch_size = 1
+batch_size = 2
 
 # Create dataset and dataloader
 try:
@@ -106,21 +106,35 @@ def collate_fn(batch):
         # Image
         resize_img = sam_trans.apply_image(img)
         resize_img_tensor = torch.as_tensor(resize_img.transpose(2, 0, 1)).float()
-        input_image = sam_model.preprocess(resize_img_tensor)
+        input_image = sam_model.preprocess(resize_img_tensor.to(device))
         images.append(input_image)
 
         # Depth
         depth = item['depth']
+        # 确保深度图像为支持的数据类型
+        if depth.dtype not in [np.uint8, np.float32]:
+            if depth.dtype == np.uint16:
+                depth = depth.astype(np.float32) / 65535.0
+            else:
+                depth = depth.astype(np.float32)
         if depth.ndim == 2: # Convert grayscale to 3-channel
             depth = np.stack((depth,)*3, axis=-1)
         resize_depth = sam_trans.apply_image(depth)
         resize_depth_tensor = torch.as_tensor(resize_depth.transpose(2, 0, 1)).float()
-        input_depth = sam_model.preprocess(resize_depth_tensor)
+        input_depth = sam_model.preprocess(resize_depth_tensor.to(device))
         depths.append(input_depth)
 
-        # Ground Truth
+        # Ground Truth - MODIFIED
         gt = item['gt']
-        gts.append(torch.tensor(gt[None, :, :]).long())
+        # Ensure gt is a NumPy array before applying transform, if it's not already
+        if not isinstance(gt, np.ndarray):
+            gt = np.array(gt)
+        if gt.ndim == 2:
+            gt = cv2.resize(gt, (sam_model.image_encoder.img_size, sam_model.image_encoder.img_size), interpolation=cv2.INTER_NEAREST)
+        else:
+            gt = cv2.resize(gt, (sam_model.image_encoder.img_size, sam_model.image_encoder.img_size), interpolation=cv2.INTER_NEAREST)
+            gt = gt[:, :, 0]  # Convert to single channel if needed
+        gts.append(torch.tensor(gt).long().unsqueeze(0))
 
         # Bounding box from GT
         y_indices, x_indices = np.where(gt > 0)
@@ -200,6 +214,8 @@ for epoch in range(num_epochs):
 
         final_mask = sam_model.loop_finer(mask_predictions, depth_embedding, depth_embedding)
         mask_predictions = 0.1 * final_mask + 0.9 * mask_predictions
+
+        gt2D = F.interpolate(gt2D.float(), size=mask_predictions.shape[-2:], mode='nearest')
 
         loss = 0.9 * seg_loss(mask_predictions, gt2D.float()) + 0.1 * distill_loss
 
