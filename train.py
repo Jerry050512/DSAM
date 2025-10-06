@@ -81,7 +81,7 @@ except AttributeError as e:
 seg_loss = monai.losses.DiceCELoss(sigmoid=True, squared_pred=True, reduction='mean')
 CWD_loss = CriterionCWD(norm_type='channel', divergence='kl', temperature=4.0)
 
-num_epochs = 100
+num_epochs = 10
 losses = []
 batch_size = 2
 
@@ -134,7 +134,9 @@ def collate_fn(batch):
         else:
             gt = cv2.resize(gt, (sam_model.image_encoder.img_size, sam_model.image_encoder.img_size), interpolation=cv2.INTER_NEAREST)
             gt = gt[:, :, 0]  # Convert to single channel if needed
-        gts.append(torch.tensor(gt).long().unsqueeze(0))
+        if gt.dtype == np.uint8:
+            gt = gt.astype(np.float32) / 255.0
+        gts.append(torch.tensor(gt).unsqueeze(0))
 
         # Bounding box from GT
         y_indices, x_indices = np.where(gt > 0)
@@ -170,7 +172,9 @@ train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True
 for epoch in range(num_epochs):
     epoch_loss = 0
 
-    for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch}/{num_epochs-1}")):
+    pbar = tqdm(train_dataloader, desc=f"Epoch {epoch}/{num_epochs-1}")
+
+    for step, batch in enumerate(pbar):
         # Move data to device
         images = batch['image'].to(device)
         depths = batch['depth'].to(device)
@@ -214,10 +218,15 @@ for epoch in range(num_epochs):
 
         final_mask = sam_model.loop_finer(mask_predictions, depth_embedding, depth_embedding)
         mask_predictions = 0.1 * final_mask + 0.9 * mask_predictions
+        mask_predictions = torch.sigmoid(mask_predictions)
+
+        gt2D = 1 - gt2D
 
         gt2D = F.interpolate(gt2D.float(), size=mask_predictions.shape[-2:], mode='nearest')
 
         loss = 0.9 * seg_loss(mask_predictions, gt2D.float()) + 0.1 * distill_loss
+
+        pbar.set_postfix({'loss': loss.item()})
 
         optimizer.zero_grad()
         loss.backward()
