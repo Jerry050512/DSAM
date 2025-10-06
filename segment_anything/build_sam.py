@@ -122,50 +122,23 @@ def _build_sam(
     )
 
     sam.eval()
-    checkpoint = Path(checkpoint)
-    if checkpoint.name == "sam_vit_b_01ec64.pth" and not checkpoint.exists():
-        cmd = input("Download sam_vit_b_01ec64.pth from facebook AI? [y]/n: ")
-        if len(cmd) == 0 or cmd.lower() == 'y':
-            checkpoint.parent.mkdir(parents=True, exist_ok=True)
-            print("Downloading SAM ViT-B checkpoint...")
-            urllib.request.urlretrieve(
-                "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
-                checkpoint,
-            )
-            print(checkpoint.name, " is downloaded!")
-    elif checkpoint.name == "sam_vit_h_4b8939.pth" and not checkpoint.exists():
-        cmd = input("Download sam_vit_h_4b8939.pth from facebook AI? [y]/n: ")
-        if len(cmd) == 0 or cmd.lower() == 'y':
-            checkpoint.parent.mkdir(parents=True, exist_ok=True)
-            print("Downloading SAM ViT-H checkpoint...")
-            urllib.request.urlretrieve(
-                "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
-                checkpoint,
-            )
-            print(checkpoint.name, " is downloaded!")
-    elif checkpoint.name == "sam_vit_l_0b3195.pth" and not checkpoint.exists():
-        cmd = input("Download sam_vit_l_0b3195.pth from facebook AI? [y]/n: ")
-        if len(cmd) == 0 or cmd.lower() == 'y':
-            checkpoint.parent.mkdir(parents=True, exist_ok=True)
-            print("Downloading SAM ViT-L checkpoint...")
-            urllib.request.urlretrieve(
-                "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
-                checkpoint,
-            )
-            print(checkpoint.name, " is downloaded!")
-
-        
     if checkpoint is not None:
-        # sam.ME = ME(256 * 3)  # 在加载预训练权重之前，初始化 ME 模块
-        with open(checkpoint, "rb") as f:
-            state_dict = torch.load(f)
+        checkpoint = Path(checkpoint)
+        # The interactive download logic has been removed.
+        # The user is expected to provide the correct path to the checkpoint.
+        if checkpoint.exists():
+            with open(checkpoint, "rb") as f:
+                state_dict = torch.load(f)
 
-        sam.ME.initialize_parameters()
-        sam.load_state_dict(state_dict, strict=False)  # 设置 strict=False 允许部分加载权重
-        path = 'work_dir_cod/SAM/pvt_v2_b2.pth'
-        save_model = torch.load(path)
-        model_dict = sam.pvt.state_dict()
-        state_dict = {k: v for k, v in save_model.items() if k in model_dict.keys()}
-        model_dict.update(state_dict)
-        sam.pvt.load_state_dict(model_dict)
+            sam.ME.initialize_parameters()
+            sam.load_state_dict(state_dict, strict=False)
+
+            # Load auxiliary weights
+            pvt_path = Path('work_dir_cod/SAM/pvt_v2_b2.pth')
+            if pvt_path.exists():
+                save_model = torch.load(pvt_path)
+                model_dict = sam.pvt.state_dict()
+                state_dict = {k: v for k, v in save_model.items() if k in model_dict.keys()}
+                model_dict.update(state_dict)
+                sam.pvt.load_state_dict(model_dict)
     return sam
