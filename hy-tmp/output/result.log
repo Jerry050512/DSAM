@@ -1,0 +1,39 @@
+2025-10-02 14:02:10,955 - INFO - Starting new training session.
+2025-10-02 14:04:31,716 - INFO - Starting new training session.
+2025-10-02 14:04:34,488 - WARNING - Pre-trained checkpoint not found at work_dir_cod/SAM/sam_vit_b_01ec64.pth.
+2025-10-02 14:04:34,489 - WARNING - Please download it from https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth and place it in the 'work_dir_cod/SAM/' directory.
+2025-10-02 14:04:34,489 - WARNING - Initializing model with random weights.
+2025-10-02 14:04:41,332 - INFO - Optimizer created with parameters from mask_decoder, pvt, BC, DWT, and ME.
+2025-10-02 14:06:59,190 - INFO - Starting new training session.
+2025-10-02 14:07:00,922 - WARNING - Pre-trained checkpoint not found at work_dir_cod/SAM/sam_vit_b_01ec64.pth.
+2025-10-02 14:07:00,923 - WARNING - Please download it from https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth and place it in the 'work_dir_cod/SAM/' directory.
+2025-10-02 14:07:00,923 - WARNING - Initializing model with random weights.
+2025-10-02 14:07:02,644 - INFO - Optimizer created with parameters from mask_decoder, pvt, BC, DWT, and ME.
+2025-10-02 14:09:03,794 - INFO - Starting new training session.
+2025-10-02 14:09:08,907 - WARNING - Pre-trained checkpoint not found at work_dir_cod/SAM/sam_vit_b_01ec64.pth.
+2025-10-02 14:09:08,907 - WARNING - Please download it from https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth and place it in the 'work_dir_cod/SAM/' directory.
+2025-10-02 14:09:08,907 - WARNING - Initializing model with random weights.
+2025-10-02 14:09:14,069 - INFO - Optimizer created with parameters from mask_decoder, pvt, BC, DWT, and ME.
+2025-10-02 14:11:19,659 - INFO - Starting new training session.
+2025-10-02 14:11:21,313 - WARNING - Pre-trained checkpoint not found at work_dir_cod/SAM/sam_vit_b_01ec64.pth.
+2025-10-02 14:11:21,313 - WARNING - Please download it from https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth and place it in the 'work_dir_cod/SAM/' directory.
+2025-10-02 14:11:21,313 - WARNING - Initializing model with random weights.
+2025-10-02 14:11:23,003 - INFO - Optimizer created with parameters from mask_decoder, pvt, BC, DWT, and ME.
+2025-10-02 14:12:37,662 - INFO - EPOCH: 0, Loss: -1.5156563222408295
+2025-10-02 14:13:42,148 - INFO - EPOCH: 1, Loss: -2.8595157861709595
+2025-10-02 14:14:45,052 - INFO - EPOCH: 2, Loss: -5.031284332275391
+2025-10-02 14:15:48,878 - INFO - EPOCH: 3, Loss: -6.617360830307007
+2025-10-02 14:16:55,860 - INFO - EPOCH: 4, Loss: -8.321273803710938
+2025-10-02 14:24:27,970 - INFO - Starting new testing session.
+2025-10-02 14:24:27,970 - INFO - Loading model...
+2025-10-02 14:24:31,180 - WARNING - Using randomly initialized model for testing since no checkpoint is available.
+2025-10-02 14:24:31,184 - INFO - Loading test dataset...
+2025-10-02 14:24:31,184 - INFO - Starting inference...
+2025-10-02 14:25:52,354 - INFO - Starting new testing session.
+2025-10-02 14:25:52,355 - INFO - Loading model...
+2025-10-02 14:25:57,297 - WARNING - Using randomly initialized model for testing since no checkpoint is available.
+2025-10-02 14:25:57,300 - INFO - Loading test dataset...
+2025-10-02 14:25:57,301 - INFO - Starting inference...
+2025-10-02 14:26:28,746 - INFO - Processed test_0, saved prediction to ./hy-tmp/output/predictions/test_0.png
+2025-10-02 14:26:56,567 - INFO - Processed test_1, saved prediction to ./hy-tmp/output/predictions/test_1.png
+2025-10-02 14:26:56,568 - INFO - Testing finished.
